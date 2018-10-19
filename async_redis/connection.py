@@ -106,6 +106,7 @@ class PythonParser(BaseParser):
             if length == -1:
                 raise gen.Return(None)
             response = yield self._stream.read_bytes(length+2)  # make sure to read the '\r\n'
+            response = response[:-2]
         elif byte == '*':
             length = int(response)
             if length == -1:

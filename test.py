@@ -17,11 +17,14 @@ sync_redis = redis.StrictRedis()
 class MainHandler(RequestHandler):
     @gen.coroutine
     def get(self):
-        value = yield async_redis.get('my_lock')
-        print value
+        key = 'my_key'
+        value = 'abcdefg'
+        yield async_redis.set(key, value)
+        value1 = yield async_redis.get(key)
+        assert value == value1
         # pong = yield async_redis.ping()
         # print pong
-        #value = sync_redis.get('my_lock')
+        # value = sync_redis.get('my_lock')
 
         self.write(value)
 
