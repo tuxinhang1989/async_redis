@@ -1,9 +1,11 @@
 # encoding: utf-8
 import os
 import sys
+import functools
 import socket
 
-from tornado import gen
+from tornado import gen, stack_context
+from tornado.ioloop import IOLoop
 from tornado.iostream import IOStream, StreamClosedError
 from tornado.netutil import Resolver
 from redis._compat import (b, xrange, byte_to_chr, bytes,
@@ -60,6 +62,7 @@ class PythonParser(BaseParser):
     def __init__(self):
         self.encoder = None
         self._stream = None
+        self.socket_timeout = None
 
     def __del__(self):
         try:
@@ -134,6 +137,8 @@ class AsyncConnection(object):
         self.port = int(port)
         self.db = db
         self.password = password
+        self._timeout = None
+        self.io_loop = IOLoop.current()
         self.socket_timeout = socket_timeout
         self.socket_connect_timeout = socket_connect_timeout or socket_timeout
         self.retry_on_timeout = retry_on_timeout
@@ -167,14 +172,8 @@ class AsyncConnection(object):
     def connect(self):
         if self._stream:
             return
-        try:
-            stream = yield self._connect()
-            stream.set_nodelay(True)
-        except socket.timeout:
-            raise TimeoutError('Timeout connectiong to server')
-        except socket.error:
-            e = sys.exc_info()[1]
-            raise ConnectionError(self._error_message(e))
+        stream = yield self._connect()
+        stream.set_nodelay(True)
         self._stream = stream
         try:
             yield self.on_connect()
@@ -188,32 +187,43 @@ class AsyncConnection(object):
     def _connect(self):
         addrinfo = yield self.resolver.resolve(self.host, self.port, 0)
         err = None
-        for res in addrinfo:
-            family, address = res
-            stream = None
+        for af, addr in addrinfo:
             try:
-                sock = socket.socket(family, socket.SOCK_STREAM)
-                sock.settimeout(self.socket_connect_timeout)
-                stream = IOStream(sock)
-                yield stream.connect(address)
-                stream.socket.settimeout(self.socket_timeout)
+                s = socket.socket(af)
+                self._stream = IOStream(s, io_loop=self.io_loop)
+                self._timeout = self.io_loop.add_timeout(
+                    self.io_loop.time() + self.socket_connect_timeout,
+                    stack_context.wrap(self._on_timeout))
+                stream = yield self._stream.connect(addr)
+                self._remove_timeout()
                 raise gen.Return(stream)
-            except socket.error as _:
+            except (StreamClosedError, socket.error) as _:
                 err = _
-                if stream is not None:
-                    stream.close()
+                self.disconnect()
 
         if err is not None:
-            raise err
+            raise ConnectionError(self._error_message(err))
+
         raise socket.error("socket.getaddrinfo returned an empty list")
+
+    def _on_timeout(self):
+        self._timeout = None
+        self.disconnect()
+
+    def _remove_timeout(self):
+        if self._timeout is not None:
+            self.io_loop.remove_timeout(self._timeout)
+            self._timeout = None
 
     def _error_message(self, exception):
         if len(exception.args) == 1:
             return "Error connecting to %s:%s. %s." % (self.host, self.port, exception.args[0])
-        else:
+        elif len(exception.args) == 2:
             return "Error %s connecting to %s:%s. %s." % (
                 exception.args[0], self.host, self.port, exception.args[1]
             )
+        else:
+            return "Error connecting to %s:%s" % (self.host, self.port)
 
     def disconnect(self):
         self._parser.on_disconnect()
@@ -244,7 +254,11 @@ class AsyncConnection(object):
     @gen.coroutine
     def read_response(self):
         try:
+            if self.socket_timeout:
+                self._timeout = self.io_loop.add_timeout(self.io_loop.time() + self.socket_timeout,
+                                                         stack_context.wrap(self._on_timeout))
             response = yield self._parser.read_response()
+            self._remove_timeout()
         except:
             self.disconnect()
             raise
@@ -256,27 +270,10 @@ class AsyncConnection(object):
     def send_packed_command(self, command):
         if not self._stream:
             yield self.connect()
-        try:
-            if isinstance(command, str):
-                command = [command]
-            for item in command:
-                yield self._stream.write(item)
-        except socket.timeout:
-            self.disconnect()
-            raise TimeoutError("Timeout writing to socket")
-        except socket.error:
-            e = sys.exc_info()[1]
-            self.disconnect()
-            if len(e.args) == 1:
-                errno, errmsg = 'UNKNOWN', e.args[0]
-            else:
-                errno = e.args[0]
-                errmsg = e.args[1]
-            raise ConnectionError("Error %s while writing to socket. %s." %
-                                  (errno, errmsg))
-        except:
-            self.disconnect()
-            raise
+        if isinstance(command, str):
+            command = [command]
+        for item in command:
+            self._stream.write(item)
 
     @gen.coroutine
     def send_command(self, *args):

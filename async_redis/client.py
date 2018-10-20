@@ -18,7 +18,6 @@ class AsyncRedis(StrictRedis):
             response = yield self.parse_response(connection, command_name, **options)
             raise gen.Return(response)
         except (ConnectionError, TimeoutError) as e:
-            print e
             connection.disconnect()
             if not connection.retry_on_timeout and isinstance(e, TimeoutError):
                 raise
