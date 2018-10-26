@@ -17,18 +17,30 @@ sync_redis = redis.StrictRedis()
 class MainHandler(RequestHandler):
     @gen.coroutine
     def get(self):
-        key = 'my_key'
-        # value = 'abcdefg'
-        # yield async_redis.set(key, value)
-        try:
-            value1 = yield async_redis.get(key)
-        except redis.ConnectionError:
-            value1 = 'connectionError'
-        # print value1
-        # assert value == value1
-        # pong = yield async_redis.ping()
-        # print pong
-        # value = sync_redis.get('my_lock')
+        key1, value1 = 'my_key1', 'value1'
+        key2, value2 = 'my_key2', 'value2'
+        key3, value3 = 'my_key3', 'value3'
+
+        with async_redis.pipeline() as p:
+            p.set(key1, value1)
+            p.set(key2, value2)
+            p.set(key3, value3)
+            p.get(key1)
+            p.get(key2)
+            p.get(key3)
+            result = yield p.execute()
+        print result
+        assert result[0] is True
+        assert result[1] is True
+        assert result[2] is True
+        assert result[3] == value1
+        assert result[4] == value2
+        assert result[5] == value3
+
+        # try:
+        #     value1 = yield async_redis.get(key)
+        # except redis.ConnectionError:
+        #     value1 = 'connectionError'
 
         self.write(value1)
 

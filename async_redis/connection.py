@@ -259,6 +259,9 @@ class AsyncConnection(object):
                                                          stack_context.wrap(self._on_timeout))
             response = yield self._parser.read_response()
             self._remove_timeout()
+        except StreamClosedError:
+            self.disconnect()
+            raise TimeoutError
         except:
             self.disconnect()
             raise
